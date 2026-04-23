@@ -4,6 +4,8 @@
 #include "libc/syscall.h"
 #include "libc/libui.h"
 #include "libc/stdlib.h"
+#include "libc/input.h"
+#include "utf-8.h"
 #include <stddef.h>
 
 #define COLOR_DARK_PANEL  0xFF202020
@@ -17,7 +19,6 @@
 #define EDITOR_MAX_LINES 128
 #define EDITOR_MAX_LINE_LEN 256
 static int editor_line_height = 16;
-static int editor_char_width = 8;
 
 typedef struct {
     char content[EDITOR_MAX_LINE_LEN];
@@ -176,11 +177,11 @@ static void editor_save_file(void) {
     file_modified = 0;
 }
 
-static void editor_insert_char(char ch) {
+static void editor_insert_char(int legacy, uint32_t codepoint) {
     if (cursor_line >= EDITOR_MAX_LINES) return;
     EditorLine *line = &lines[cursor_line];
     
-    if (ch == '\n') {
+    if (legacy == '\n') {
         if (line_count >= EDITOR_MAX_LINES) return;
         for (int j = line_count; j > cursor_line; j--) {
             lines[j] = lines[j - 1];
@@ -206,13 +207,17 @@ static void editor_insert_char(char ch) {
         
         cursor_line++;
         cursor_col = 0;
-    } else if (ch == '\b') {
+    } else if (legacy == KEY_BACKSPACE) {
         if (cursor_col > 0) {
-            for (int i = cursor_col - 1; i < line->length; i++) {
-                line->content[i] = line->content[i + 1];
+            const char *prev = text_prev_utf8(line->content, line->content + cursor_col);
+            int char_len = (int)((line->content + cursor_col) - prev);
+            
+            for (int i = cursor_col - char_len; i < line->length - char_len; i++) {
+                line->content[i] = line->content[i + char_len];
             }
-            line->length--;
-            cursor_col--;
+            line->length -= char_len;
+            cursor_col -= char_len;
+            line->content[line->length] = 0;
         } else if (cursor_line > 0) {
             EditorLine *prev = &lines[cursor_line - 1];
             int merge_point = prev->length;
@@ -235,14 +240,19 @@ static void editor_insert_char(char ch) {
             cursor_col = merge_point;
             line_count--;
         }
-    } else if (ch >= 32 && ch <= 126) {
-        if (cursor_col < EDITOR_MAX_LINE_LEN - 1) {
+    } else if (codepoint >= 32 && codepoint != 127) {
+        char utf8[4];
+        int len = text_encode_utf8(codepoint, utf8);
+        if (len > 0 && line->length + len < EDITOR_MAX_LINE_LEN) {
             for (int i = line->length; i > cursor_col; i--) {
-                line->content[i] = line->content[i - 1];
+                line->content[i + len - 1] = line->content[i - 1];
             }
-            line->content[cursor_col] = ch;
-            line->length++;
-            cursor_col++;
+            for (int i = 0; i < len; i++) {
+                line->content[cursor_col + i] = utf8[i];
+            }
+            line->length += len;
+            cursor_col += len;
+            line->content[line->length] = 0;
         }
     }
     file_modified = 1;
@@ -385,8 +395,7 @@ static void editor_paint(ui_window_t win) {
     // Status bar
     int status_y = win_h - footer_h;
     ui_draw_rounded_rect_filled(win, padding, status_y + 2, content_width, footer_h - 4, 6, COLOR_DARK_PANEL);
-    
-    char status_text[128];
+
     ui_draw_string(win, padding + 15, status_y + 5, "Line:", COLOR_DKGRAY);
     
     char line_str[32];
@@ -409,36 +418,38 @@ static void editor_paint(ui_window_t win) {
     ui_draw_string(win, padding + 160, status_y + 5, col_str, COLOR_DARK_TEXT);
 }
 
-static void editor_handle_key(char c, bool pressed) {
+static void editor_handle_key(int legacy, uint32_t codepoint, bool pressed) {
     if (!pressed) return;
-    if (c == 17) { // UP
+    if (legacy == KEY_UP) { // UP
         if (cursor_line > 0) {
             cursor_line--;
             if (cursor_col > lines[cursor_line].length) cursor_col = lines[cursor_line].length;
             if (cursor_line < scroll_top) scroll_top = cursor_line;
         }
-    } else if (c == 18) { // DOWN
+    } else if (legacy == KEY_DOWN) { // DOWN
         if (cursor_line < line_count - 1) {
             cursor_line++;
             if (cursor_col > lines[cursor_line].length) cursor_col = lines[cursor_line].length;
             editor_ensure_cursor_visible();
         }
-    } else if (c == 19) { // LEFT
+    } else if (legacy == KEY_LEFT) { // LEFT
         if (cursor_col > 0) {
-            cursor_col--;
+            const char *prev = text_prev_utf8(lines[cursor_line].content, lines[cursor_line].content + cursor_col);
+            cursor_col = (int)(prev - lines[cursor_line].content);
         } else if (cursor_line > 0) {
             cursor_line--;
             cursor_col = lines[cursor_line].length;
         }
-    } else if (c == 20) { // RIGHT
+    } else if (legacy == KEY_RIGHT) { // RIGHT
         if (cursor_col < lines[cursor_line].length) {
-            cursor_col++;
+            const char *next = text_next_utf8(lines[cursor_line].content + cursor_col);
+            cursor_col = (int)(next - lines[cursor_line].content);
         } else if (cursor_line < line_count - 1) {
             cursor_line++;
             cursor_col = 0;
         }
     } else {
-        editor_insert_char(c);
+        editor_insert_char(legacy, codepoint);
     }
 }
 
@@ -477,11 +488,11 @@ int main(int argc, char **argv) {
                 editor_paint(win);
                 ui_mark_dirty(win, 0, 0, win_w, win_h);
             } else if (ev.type == GUI_EVENT_KEY) {
-                editor_handle_key((char)ev.arg1, true);
+                editor_handle_key(ev.arg1, (uint32_t)ev.arg4, true);
                 editor_paint(win);
                 ui_mark_dirty(win, 0, 0, win_w, win_h);
             } else if (ev.type == GUI_EVENT_KEYUP) {
-                editor_handle_key((char)ev.arg1, false);
+                editor_handle_key(ev.arg1, (uint32_t)ev.arg4, false);
             } else if (ev.type == GUI_EVENT_CLOSE) {
                 sys_exit(0);
             }

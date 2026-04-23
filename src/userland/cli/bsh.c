@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <syscall.h>
 #include <stdbool.h>
+#include "utf-8.h"
 
 #define MAX_LINE 512
 #define MAX_ARGS 32
@@ -576,9 +577,6 @@ static void get_time_string(char *out, int max_len) {
     str_append(out, mm, max_len);
 }
 
-static void format_prompt(const char *tmpl, char *out, int max_len) {
-    render_prompt(tmpl, out, max_len, false);
-}
 
 static int split_args(char *line, char *argv[], int max_args) {
     int argc = 0;
@@ -1466,8 +1464,13 @@ static int read_line(char *out, int max_len, const char *prompt_tmpl) {
 
         if (ch == '\b' || ch == 127) {
             if (len > 0) {
-                len--;
+                // Find previous UTF-8 character boundary
+                const char *prev = text_prev_utf8(out, out + len);
+                len = (int)(prev - out);
                 out[len] = 0;
+                
+                // Send only ONE backspace sequence to the terminal
+                // because the terminal is now codepoint-based.
                 sys_write(1, "\b \b", 3);
             }
             search_mode = false;
@@ -1590,7 +1593,7 @@ static int read_line(char *out, int max_len, const char *prompt_tmpl) {
             continue;
         }
 
-        if (ch >= 32 && len < max_len - 1) {
+        if (((unsigned char)ch >= 32 || (signed char)ch < 0) && len < max_len - 1) {
             out[len++] = ch;
             out[len] = 0;
             sys_write(1, &ch, 1);

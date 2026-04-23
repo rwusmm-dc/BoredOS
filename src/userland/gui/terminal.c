@@ -7,7 +7,7 @@
 #include <syscall.h>
 #include "libc/libui.h"
 #include "libc/input.h"
-#include <stdbool.h>
+#include "utf-8.h"
 #include <stdint.h>
 
 #define DEFAULT_COLS 116
@@ -25,7 +25,7 @@ static int g_line_h = 10;
 #define LINE_MAX 256
 
 typedef struct {
-    char c;
+    uint32_t c;
     uint32_t color;
 } CharCell;
 
@@ -51,6 +51,13 @@ typedef struct {
     int saved_col;
 
     bool colors_enabled;
+
+    // UTF-8 decoding state
+    uint32_t utf8_codepoint;
+    int utf8_expected;
+    int utf8_received;
+
+    int unacknowledged_chars;
 
     // for color
     char current_input[LINE_MAX];
@@ -221,7 +228,7 @@ static void session_scroll(TerminalSession *s) {
     s->cursor_col = 0;
 }
 
-static void session_put_char(TerminalSession *s, char c) {
+static void session_put_char(TerminalSession *s, uint32_t c) {
     if (c == '\n') {
         s->cursor_row++;
         s->cursor_col = 0;
@@ -234,6 +241,7 @@ static void session_put_char(TerminalSession *s, char c) {
     }
     if (c == '\b') {
         if (s->cursor_col > 0) s->cursor_col--;
+        if (s->unacknowledged_chars < 0) s->unacknowledged_chars++;
         int idx = s->cursor_row * g_cols + s->cursor_col;
         if (idx >= 0 && idx < g_cols * g_rows) {
             s->cells[idx].c = ' ';
@@ -257,6 +265,7 @@ static void session_put_char(TerminalSession *s, char c) {
         s->cells[idx].color = s->fg_color;
     }
     s->cursor_col++;
+    if (s->unacknowledged_chars > 0) s->unacknowledged_chars--;
     if (s->cursor_col >= g_cols) {
         s->cursor_col = 0;
         s->cursor_row++;
@@ -290,7 +299,7 @@ static void ansi_handle_sgr(TerminalSession *s) {
     }
 }
 
-static void ansi_finalize(TerminalSession *s, char cmd) {
+static void ansi_finalize(TerminalSession *s, uint32_t cmd) {
     if (cmd == 'm') {
         ansi_handle_sgr(s);
     } else if (cmd == 'J') {
@@ -339,36 +348,75 @@ static void ansi_finalize(TerminalSession *s, char cmd) {
 }
 
 static void session_process_char(TerminalSession *s, char c) {
+    uint8_t b = (uint8_t)c;
+    if (s->utf8_expected == 0) {
+        if (b < 128) {
+            s->utf8_codepoint = b;
+            s->utf8_expected = 0;
+        } else if ((b & 0xE0) == 0xC0) {
+            s->utf8_codepoint = b & 0x1F;
+            s->utf8_expected = 1;
+            s->utf8_received = 1;
+            return;
+        } else if ((b & 0xF0) == 0xE0) {
+            s->utf8_codepoint = b & 0x0F;
+            s->utf8_expected = 2;
+            s->utf8_received = 1;
+            return;
+        } else if ((b & 0xF8) == 0xF0) {
+            s->utf8_codepoint = b & 0x07;
+            s->utf8_expected = 3;
+            s->utf8_received = 1;
+            return;
+        } else {
+            return;
+        }
+    } else {
+        if ((b & 0xC0) == 0x80) {
+            s->utf8_codepoint = (s->utf8_codepoint << 6) | (b & 0x3F);
+            s->utf8_received++;
+            if (s->utf8_received <= s->utf8_expected) {
+                return;
+            }
+        } else {
+            s->utf8_expected = 0;
+            return;
+        }
+    }
+
+    uint32_t cp = s->utf8_codepoint;
+    s->utf8_expected = 0;
+
     if (s->ansi_state == 0) {
-        if (c == 27) {
+        if (cp == 27) {
             s->ansi_state = 1;
             s->ansi_param_count = 0;
             s->ansi_params[0] = 0;
             return;
         }
-        session_put_char(s, c);
+        session_put_char(s, cp);
         return;
     }
 
     if (s->ansi_state == 1) {
-        if (c == '[') {
+        if (cp == '[') {
             s->ansi_state = 2;
             s->ansi_param_count = 0;
             s->ansi_params[0] = 0;
             return;
         }
         s->ansi_state = 0;
-        session_put_char(s, c);
+        session_put_char(s, cp);
         return;
     }
 
     if (s->ansi_state == 2) {
-        if (c >= '0' && c <= '9') {
+        if (cp >= '0' && cp <= '9') {
             int idx = s->ansi_param_count;
-            s->ansi_params[idx] = s->ansi_params[idx] * 10 + (c - '0');
+            s->ansi_params[idx] = s->ansi_params[idx] * 10 + (cp - '0');
             return;
         }
-        if (c == ';') {
+        if (cp == ';') {
             if (s->ansi_param_count < 7) {
                 s->ansi_param_count++;
                 s->ansi_params[s->ansi_param_count] = 0;
@@ -376,7 +424,7 @@ static void session_process_char(TerminalSession *s, char c) {
             return;
         }
         s->ansi_param_count++;
-        ansi_finalize(s, c);
+        ansi_finalize(s, cp);
         return;
     }
 }
@@ -708,6 +756,9 @@ static void draw_session(TerminalSession *s) {
     int total_lines = s->scroll_count + g_rows;
     int bottom_line = total_lines - 1 - s->scroll_offset;
     int top_line = bottom_line - (g_rows - 1);
+    int input_char_len = text_strlen_utf8(s->current_input);
+    int visible_len = input_char_len - s->unacknowledged_chars;
+    if (visible_len < 0) visible_len = 0;
 
     for (int row = 0; row < g_rows; row++) {
         int line_index = top_line + row;
@@ -722,23 +773,25 @@ static void draw_session(TerminalSession *s) {
                 line_cols = g_cols;
             }
         }
-
-        int input_start = s->cursor_col - s->input_len;
+        
+        int input_start = s->cursor_col - visible_len;
         if (input_start < 0) input_start = 0;
         if (input_start >= g_cols) input_start = g_cols - 1;
 
-        // lenght of a command
-        int cmd_len = 0;
-        while (cmd_len < s->input_len &&
-            s->current_input[cmd_len] != ' ') {
-            cmd_len++;
+        char cmd[64];
+        int i = 0;
+        while (i < s->input_len && s->current_input[i] != ' ' && s->current_input[i] != '\t' && i < 63) {
+            cmd[i] = s->current_input[i];
+            i++;
         }
+        cmd[i] = 0;
+        int cmd_char_len = text_strlen_utf8(cmd);
 
-        int input_end = input_start + cmd_len;
+        int input_end = input_start + cmd_char_len;
         if (input_end > g_cols) input_end = g_cols;
 
         for (int col = 0; col < g_cols; col++) {
-            char ch = ' ';
+            uint32_t ch = ' ';
             uint32_t color = s->fg_color;
 
             if (line && col < line_cols) {
@@ -753,10 +806,13 @@ static void draw_session(TerminalSession *s) {
                 }
             }
 
-            char str[2] = { ch, 0 };
+            char out[5];
+            int len = text_encode_utf8(ch, out);
+            out[len] = 0;
+            
             int x = col * g_char_w;
             int y = base_y + row * g_line_h;
-            ui_draw_string(g_win, x, y, str, color);
+            ui_draw_string(g_win, x, y, out, color);
         }
     }
 
@@ -784,6 +840,10 @@ static void tab_init(TerminalSession *s, int tty_id, int bsh_pid) {
 
     s->input_len = 0;
     s->current_input[0] = 0;
+    s->utf8_codepoint = 0;
+    s->utf8_expected = 0;
+    s->utf8_received = 0;
+    s->unacknowledged_chars = 0;
     session_reset_colors(s);
     scrollback_init(s);
     
@@ -1024,30 +1084,11 @@ static void update_input_color(TerminalSession *s) {
 
 static void handle_key(gui_event_t *ev) {
     TerminalSession *s = &g_tabs[g_active_tab];
-    char c = (char)ev->arg1;
+    int legacy = ev->arg1;
     bool ctrl = ev->arg3 != 0;
+    uint32_t codepoint = (uint32_t)ev->arg4;
 
-    // create new tab with ctrl + t
-    if (ctrl && c == 't') {
-        int idx = create_tab();
-        if (idx >= 0) g_active_tab = idx;
-        return;
-    }
-
-    // switch to tab right, with ctrl + arrow right
-    if (ctrl && c == KEY_RIGHT) {
-        if (g_tab_count > 0) g_active_tab = (g_active_tab + 1) % g_tab_count;
-        return;
-    }
-
-    // switch to tab left, with ctrl + arrow left
-    if (ctrl && c == KEY_LEFT) {
-        if (g_tab_count > 0) g_active_tab = (g_active_tab + g_tab_count - 1) % g_tab_count;
-        return;
-    }
-
-    // kill the processus with ctrl + c
-    if (ctrl && (c == 'c' || c == 'C')) {
+    if (ctrl && (legacy == 'c' || legacy == 'C')) {
         int fg = sys_tty_get_fg(s->tty_id);
         if (fg > 0) {
             sys_tty_kill_fg(s->tty_id);
@@ -1059,30 +1100,84 @@ static void handle_key(gui_event_t *ev) {
         return;
     }
 
+    // create new tab with ctrl + t
+    if (ctrl && (legacy == 't' || legacy == 'T')) {
+        int idx = create_tab();
+        if (idx >= 0) g_active_tab = idx;
+        return;
+    }
+
+    // switch to tab right, with ctrl + arrow right
+    if (ctrl && legacy == KEY_RIGHT) {
+        if (g_tab_count > 0) g_active_tab = (g_active_tab + 1) % g_tab_count;
+        return;
+    }
+
+    // switch to tab left, with ctrl + arrow left
+    if (ctrl && legacy == KEY_LEFT) {
+        if (g_tab_count > 0) g_active_tab = (g_active_tab + g_tab_count - 1) % g_tab_count;
+        return;
+    }
+
+    if (legacy == KEY_LEFT) {
+        char seq[] = { 27, '[', 'D' };
+        sys_tty_write_in(s->tty_id, seq, 3);
+        return;
+    } else if (legacy == KEY_RIGHT) {
+        char seq[] = { 27, '[', 'C' };
+        sys_tty_write_in(s->tty_id, seq, 3);
+        return;
+    } else if (legacy == KEY_UP) {
+        char seq[] = { 27, '[', 'A' };
+        sys_tty_write_in(s->tty_id, seq, 3);
+        return;
+    } else if (legacy == KEY_DOWN) {
+        char seq[] = { 27, '[', 'B' };
+        sys_tty_write_in(s->tty_id, seq, 3);
+        return;
+    }
+
     if (!ctrl) {
-        if (c == KEY_BACKSPACE) {
+        if (legacy == KEY_BACKSPACE) {
             if (s->input_len > 0) {
-                s->input_len--;
+                // Find previous UTF-8 character boundary
+                const char *prev = text_prev_utf8(s->current_input, s->current_input + s->input_len);
+                s->input_len = (int)(prev - s->current_input);
                 s->current_input[s->input_len] = 0;
             }
-        } else if (c >= 32 && c < 127) {
-            if (s->input_len < LINE_MAX - 1) {
-                s->current_input[s->input_len++] = c;
+        } else if (codepoint >= 32 && codepoint != 127) {
+            char utf8[4];
+            int len = text_encode_utf8(codepoint, utf8);
+            if (len > 0 && s->input_len + len < LINE_MAX - 1) {
+                for (int i = 0; i < len; i++) {
+                    s->current_input[s->input_len + i] = utf8[i];
+                }
+                s->input_len += len;
                 s->current_input[s->input_len] = 0;
+                s->unacknowledged_chars++;
             }
+        } else if (legacy == KEY_ENTER) {
+            s->input_color = 0xFFFFFFFF;
+            s->input_len = 0;
+            s->current_input[0] = 0;
+            s->unacknowledged_chars = 0;
+        } else if (legacy == KEY_BACKSPACE) {
+            s->unacknowledged_chars--;
         }
 
         update_input_color(s);
     }
 
-    if (c == KEY_ENTER) {
-        s->input_color = 0xFFFFFFFF;
-        s->input_len = 0;
-        s->current_input[0] = 0;
+    if (codepoint >= 32 && codepoint != 127) {
+        char utf8[4];
+        int len = text_encode_utf8(codepoint, utf8);
+        if (len > 0) {
+            sys_tty_write_in(s->tty_id, utf8, len);
+        }
+    } else {
+        char c = (char)legacy;
+        sys_tty_write_in(s->tty_id, &c, 1);
     }
-
-
-    sys_tty_write_in(s->tty_id, &c, 1);
 }
 
 int main(void) {
