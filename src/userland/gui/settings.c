@@ -12,6 +12,8 @@
 #include "../../wm/libwidget.h"
 #include "utf-8.h"
 
+extern void sys_parallel_run(void (*fn)(void*), void **args, int count);
+
 #define COLOR_COFFEE    0xFF6B4423
 #define COLOR_TEAL      0xFF008080
 #define COLOR_GREEN     0xFF008000
@@ -383,7 +385,8 @@ static void load_settings_icons(void) {
     );
 }
 
-static void load_wallpapers(void) {
+static void decode_wallpapers_task(void *arg) {
+    (void)arg;
     wallpaper_count = 0;
     FAT32_FileInfo info[MAX_WALLPAPERS];
     int count = sys_list("/Library/images/Wallpapers", info, MAX_WALLPAPERS);
@@ -435,6 +438,11 @@ static void load_wallpapers(void) {
 
         wallpaper_count++;
     }
+}
+
+static void load_wallpapers(void) {
+    void *job_args[1] = { NULL };
+    sys_parallel_run(decode_wallpapers_task, job_args, 1);
 
     for (int i = 0; i < wallpaper_count; i++) {
         int tx = (i % 3) * (WALLPAPER_THUMB_W + 15);
