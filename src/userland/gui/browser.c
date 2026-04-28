@@ -309,7 +309,7 @@ static int fetch_content(const char *url, char *dest_buf, int max_len, bool prog
         char pbuf[10]; itoa(current_port, pbuf);
         s = pbuf; while(*s) *r++ = *s++;
     }
-    s = "\r\nUser-Agent: BoredOS/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n"; while(*s) *r++ = *s++;
+    s = "\r\nUser-Agent: BoredOS/BoredBrowserium\r\nAccept: */*\r\nConnection: close\r\n\r\n"; while(*s) *r++ = *s++;
     
     sys_tcp_send(request, r - request);
     
