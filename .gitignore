@@ -34,3 +34,5 @@ disk.img
 disk.qcow2
 .gitignore
 disk.img
+edk2-vars.fd
+disk.img
