@@ -53,4 +53,7 @@ int rename(const char *oldpath, const char *newpath);
 FILE *tmpfile(void);
 char *tmpnam(char *s);
 
+void puts(const char *s);
+void printf(const char *fmt, ...);
+
 #endif
