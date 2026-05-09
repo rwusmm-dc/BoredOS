@@ -434,32 +434,34 @@ int keymap_legacy_key(uint16_t keycode, uint32_t codepoint) {
         case KEY_ENTER:
         case KEY_KP_ENTER:   return '\n';
 
+        case KEY_SPACE:      return ' ';
+
         case KEY_ARROW_UP:    return 17;
         case KEY_ARROW_DOWN:  return 18;
         case KEY_ARROW_LEFT:  return 19;
         case KEY_ARROW_RIGHT: return 20;
 
         case KEY_LEFT_CTRL:
-        case KEY_RIGHT_CTRL:  return 21;
+        case KEY_RIGHT_CTRL:  return 161;
         case KEY_LEFT_SHIFT:
-        case KEY_RIGHT_SHIFT: return 24;
-        case KEY_LEFT_ALT:    return 25;
+        case KEY_RIGHT_SHIFT: return 162;
+        case KEY_LEFT_ALT:    return 163;
         case KEY_RIGHT_ALT:   return 22;  // for compat w/ doom
         case KEY_CAPS_LOCK:   return 23;  // same here
         case KEY_DELETE:      return 127;
 
-        case KEY_F1: return 31;
-        case KEY_F2: return 32;
-        case KEY_F3: return 33;
-        case KEY_F4: return 34;
-        case KEY_F5: return 35;
-        case KEY_F6: return 36;
-        case KEY_F7: return 37;
-        case KEY_F8: return 38;
-        case KEY_F9: return 39;
-        case KEY_F10: return 40;
-        case KEY_F11: return 41;
-        case KEY_F12: return 42;
+        case KEY_F1: return 141;
+        case KEY_F2: return 142;
+        case KEY_F3: return 143;
+        case KEY_F4: return 144;
+        case KEY_F5: return 145;
+        case KEY_F6: return 146;
+        case KEY_F7: return 147;
+        case KEY_F8: return 148;
+        case KEY_F9: return 149;
+        case KEY_F10: return 150;
+        case KEY_F11: return 151;
+        case KEY_F12: return 152;
 
         default:              return 0;
     }
