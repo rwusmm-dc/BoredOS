@@ -96,7 +96,15 @@ int DG_GetKey(int* pressed, unsigned char* key) {
             else if (k == 21) dk = KEY_FIRE;
             else if (k == 22) dk = KEY_RALT;
             else if (k == 23) dk = KEY_CAPSLOCK;
+            else if (k == 24) dk = KEY_RSHIFT;
+            else if (k == 25) dk = KEY_LALT;
             else if (k == 27) dk = KEY_ESCAPE;
+            else if (k == '\b') dk = KEY_BACKSPACE;
+            else if (k == '\t') dk = KEY_TAB;
+            else if (k == 127) dk = KEY_DEL;
+            else if (k >= 31 && k <= 40) dk = KEY_F1 + (k - 31);
+            else if (k == 41) dk = KEY_F11;
+            else if (k == 42) dk = KEY_F12;
             else if (k == ' ') dk = KEY_USE;
             else if (k == '\n' || k == '\r') dk = KEY_ENTER;
             else if (k >= 'A' && k <= 'Z') dk = k + 32;
