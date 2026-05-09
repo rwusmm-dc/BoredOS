@@ -62,6 +62,8 @@ static widget_dropdown_t drop_keyboard;
 static widget_textbox_t tb_r, tb_g, tb_b;
 static widget_textbox_t tb_ip, tb_dns;
 static widget_button_t btn_apply, btn_back;
+static widget_slider_t slider_mouse;
+static widget_slider_t slider_cursor_size;
 
 #define MAX_WALLPAPERS 10
 
@@ -199,16 +201,20 @@ typedef struct {
     char name[64];
     uint32_t thumb[WALLPAPER_THUMB_W * WALLPAPER_THUMB_H];
     _Bool valid;
+    _Bool thumb_loaded;
 } wallpaper_entry_t;
 
 static wallpaper_entry_t wallpapers[MAX_WALLPAPERS];
 static int wallpaper_count = 0;
+static _Bool wallpapers_scanned = 0;
+static int next_wallpaper_thumb = 0;
 
 static _Bool desktop_snap_to_grid = 1;
 static _Bool desktop_auto_align = 1;
 static int desktop_max_rows_per_col = 10;
 static int desktop_max_cols = 10;
 static int mouse_speed = 10;
+static int mouse_cursor_scale_tenths = 10;
 
 static int font_count = 0;
 static int selected_font = -1;
@@ -227,6 +233,22 @@ static void cli_itoa(int num, char *str) {
         str[i] = (num % 10) + '0';
         num /= 10;
     }
+}
+
+static void format_scale_tenths(int scale_tenths, char *str) {
+    if (scale_tenths < 10) scale_tenths = 10;
+    if (scale_tenths > 40) scale_tenths = 40;
+
+    char whole[4];
+    cli_itoa(scale_tenths / 10, whole);
+    strcpy(str, whole);
+
+    int len = 0;
+    while (str[len]) len++;
+    str[len++] = '.';
+    str[len++] = (char)('0' + (scale_tenths % 10));
+    str[len++] = 'x';
+    str[len] = 0;
 }
 
 static void generate_lumberjack_pattern(void) {
@@ -388,9 +410,15 @@ static void load_settings_icons(void) {
 static void decode_wallpapers_task(void *arg) {
     (void)arg;
     wallpaper_count = 0;
+    next_wallpaper_thumb = 0;
+    wallpapers_scanned = 0;
+
     FAT32_FileInfo info[MAX_WALLPAPERS];
     int count = sys_list("/Library/images/Wallpapers", info, MAX_WALLPAPERS);
-    if (count < 0) return;
+    if (count < 0) {
+        wallpapers_scanned = 1;
+        return;
+    }
 
     for (int i = 0; i < count && wallpaper_count < MAX_WALLPAPERS; i++) {
         if (info[i].is_directory) continue; // Skip directories
@@ -404,6 +432,9 @@ static void decode_wallpapers_task(void *arg) {
         if (c1 != 'g' || c2 != 'p' || c3 != 'j') continue;
 
         wallpaper_entry_t *wp = &wallpapers[wallpaper_count];
+        wp->valid = 0;
+        wp->thumb_loaded = 0;
+
         // Set path
         char *pref = "/Library/images/Wallpapers/";
         int pl = 0; while (pref[pl]) { wp->path[pl] = pref[pl]; pl++; }
@@ -414,68 +445,87 @@ static void decode_wallpapers_task(void *arg) {
         for (int j = 0; j < nl - 4 && j < 63; j++) wp->name[j] = info[i].name[j];
         wp->name[(nl-4 < 63) ? nl-4 : 63] = 0;
 
-        // Load and generate thumbnail
+        int tx = (wallpaper_count % 3) * (WALLPAPER_THUMB_W + 15);
+        int ty = (wallpaper_count / 3) * (WALLPAPER_THUMB_H + 30);
+        widget_button_init(&btn_wp_thumbs[wallpaper_count], 8 + tx, 306 + ty, WALLPAPER_THUMB_W + 8, WALLPAPER_THUMB_H + 26, "");
+        wallpaper_count++;
+    }
+
+    wallpapers_scanned = 1;
+}
+
+static void load_wallpapers(void) {
+    void *job_args[1] = { NULL };
+    sys_parallel_run(decode_wallpapers_task, job_args, 1);
+}
+
+static bool load_next_wallpaper_thumb(void) {
+    if (!wallpapers_scanned) return false;
+
+    while (next_wallpaper_thumb < wallpaper_count) {
+        wallpaper_entry_t *wp = &wallpapers[next_wallpaper_thumb];
+        next_wallpaper_thumb++;
+
+        if (wp->thumb_loaded) continue;
+        wp->thumb_loaded = 1;
+
         char cache_path[256];
         int cp = 0;
         char *cpref = "/Library/Caches/Thumbnails/";
         while (cpref[cp]) { cache_path[cp] = cpref[cp]; cp++; }
+
+        int prefix_len = 0;
+        char *pref = "/Library/images/Wallpapers/";
+        while (pref[prefix_len] && wp->path[prefix_len] == pref[prefix_len]) prefix_len++;
+
         int cn = 0;
-        while (info[i].name[cn]) { cache_path[cp+cn] = info[i].name[cn]; cn++; }
+        while (wp->path[prefix_len + cn]) { cache_path[cp + cn] = wp->path[prefix_len + cn]; cn++; }
         char *csuf = ".bin";
         int cs = 0;
-        while (csuf[cs]) { cache_path[cp+cn+cs] = csuf[cs]; cs++; }
-        cache_path[cp+cn+cs] = 0;
+        while (csuf[cs]) { cache_path[cp + cn + cs] = csuf[cs]; cs++; }
+        cache_path[cp + cn + cs] = 0;
 
         int cfd = sys_open(cache_path, "r");
         if (cfd >= 0) {
             sys_read(cfd, wp->thumb, WALLPAPER_THUMB_W * WALLPAPER_THUMB_H * 4);
             sys_close(cfd);
             wp->valid = 1;
-        } else {
-            int fd = sys_open(wp->path, "r");
-            if (fd >= 0) {
-                int size = sys_seek(fd, 0, 2); // SEEK_END
-                sys_seek(fd, 0, 0); // SEEK_SET
-                if (size > 0 && size < 8 * 1024 * 1024) {
-                        unsigned char *buf = (unsigned char *)malloc(size);
-                        if (buf) {
-                            sys_read(fd, buf, size);
-                            int img_w, img_h, channels;
-                            unsigned char *img = stbi_load_from_memory(buf, size, &img_w, &img_h, &channels, 4);
-                            if (img && img_w > 0 && img_h > 0) {
-                                scale_rgba_to_argb(img, img_w, img_h, wp->thumb, WALLPAPER_THUMB_W, WALLPAPER_THUMB_H);
-                                wp->valid = 1;
-                                stbi_image_free(img);
-
-                                // Save to cache
-                                sys_mkdir("/Library/Caches");
-                                sys_mkdir("/Library/Caches/Thumbnails");
-                                int swfd = sys_open(cache_path, "w");
-                                if (swfd >= 0) {
-                                    sys_write_fs(swfd, wp->thumb, WALLPAPER_THUMB_W * WALLPAPER_THUMB_H * 4);
-                                    sys_close(swfd);
-                                }
-                            }
-                            free(buf);
-                        }
-                }
-                sys_close(fd);
-            }
+            return true;
         }
 
-        wallpaper_count++;
-    }
-}
+        int fd = sys_open(wp->path, "r");
+        if (fd >= 0) {
+            int size = sys_seek(fd, 0, 2); // SEEK_END
+            sys_seek(fd, 0, 0); // SEEK_SET
+            if (size > 0 && size < 8 * 1024 * 1024) {
+                unsigned char *buf = (unsigned char *)malloc(size);
+                if (buf) {
+                    sys_read(fd, buf, size);
+                    int img_w, img_h, channels;
+                    unsigned char *img = stbi_load_from_memory(buf, size, &img_w, &img_h, &channels, 4);
+                    if (img && img_w > 0 && img_h > 0) {
+                        scale_rgba_to_argb(img, img_w, img_h, wp->thumb, WALLPAPER_THUMB_W, WALLPAPER_THUMB_H);
+                        wp->valid = 1;
 
-static void load_wallpapers(void) {
-    void *job_args[1] = { NULL };
-    sys_parallel_run(decode_wallpapers_task, job_args, 1);
+                        sys_mkdir("/Library/Caches");
+                        sys_mkdir("/Library/Caches/Thumbnails");
+                        int swfd = sys_open(cache_path, "w");
+                        if (swfd >= 0) {
+                            sys_write_fs(swfd, wp->thumb, WALLPAPER_THUMB_W * WALLPAPER_THUMB_H * 4);
+                            sys_close(swfd);
+                        }
+                    }
+                    if (img) stbi_image_free(img);
+                    free(buf);
+                }
+            }
+            sys_close(fd);
+        }
 
-    for (int i = 0; i < wallpaper_count; i++) {
-        int tx = (i % 3) * (WALLPAPER_THUMB_W + 15);
-        int ty = (i / 3) * (WALLPAPER_THUMB_H + 30);
-        widget_button_init(&btn_wp_thumbs[i], 8 + tx, 306 + ty, WALLPAPER_THUMB_W + 8, WALLPAPER_THUMB_H + 20, "");
+        return true;
     }
+
+    return false;
 }
 
 static uint32_t parse_rgb_separate(const char *r, const char *g, const char *b) {
@@ -498,7 +548,6 @@ static uint32_t parse_rgb_separate(const char *r, const char *g, const char *b) 
 static void control_panel_paint_main(ui_window_t win) {
     int offset_x = 8;
     int offset_y = 6;
-    int win_w = 350;
     
     int item_y = 0;
     int item_h = 60;
@@ -815,15 +864,23 @@ static void control_panel_paint_mouse(ui_window_t win) {
     int section_y = offset_y + 65;
     ui_draw_string(win, offset_x, section_y, "Speed:", COLOR_DARK_TEXT);
     
-    ui_draw_rounded_rect_filled(win, offset_x + 60, section_y + 8, 200, 8, 4, COLOR_DARK_PANEL);
-    
-    int knob_x = offset_x + 60 + (mouse_speed - 1) * 190 / 49;
-    ui_draw_rounded_rect_filled(win, knob_x, section_y + 2, 10, 14, 3, 0xFF4A90E2);
+    slider_mouse.value = (float)mouse_speed;
+    widget_slider_draw(&settings_ctx, &slider_mouse);
     
     ui_draw_string(win, offset_x + 270, section_y + 4, "x", COLOR_DARK_TEXT);
     char speed_str[4];
     cli_itoa(mouse_speed, speed_str);
     ui_draw_string(win, offset_x + 280, section_y + 4, speed_str, COLOR_DARK_TEXT);
+
+    section_y += 40;
+    ui_draw_string(win, offset_x, section_y, "Size:", COLOR_DARK_TEXT);
+
+    slider_cursor_size.value = (float)mouse_cursor_scale_tenths;
+    widget_slider_draw(&settings_ctx, &slider_cursor_size);
+
+    char scale_str[8];
+    format_scale_tenths(mouse_cursor_scale_tenths, scale_str);
+    ui_draw_string(win, offset_x + 270, section_y + 4, scale_str, COLOR_DARK_TEXT);
 }
 
 static void on_font_scroll(void *user_data, int new_scroll_y) {
@@ -982,6 +1039,7 @@ static void save_desktop_config(void) {
 
 static void save_mouse_config(void) {
     sys_system(SYSTEM_CMD_SET_MOUSE_SPEED, mouse_speed, 0, 0, 0);
+    sys_system(SYSTEM_CMD_SET_MOUSE_CURSOR_SCALE, mouse_cursor_scale_tenths, 0, 0, 0);
 }
 
 static int parse_ip(const char* str, net_ipv4_address_t* ip) {
@@ -1006,41 +1064,7 @@ static int parse_ip(const char* str, net_ipv4_address_t* ip) {
     return 0;
 }
 
-static void fetch_kernel_state(void) {
-    desktop_snap_to_grid = sys_system(SYSTEM_CMD_GET_DESKTOP_PROP, 1, 0, 0, 0);
-    desktop_auto_align = sys_system(SYSTEM_CMD_GET_DESKTOP_PROP, 2, 0, 0, 0);
-    desktop_max_rows_per_col = sys_system(SYSTEM_CMD_GET_DESKTOP_PROP, 3, 0, 0, 0);
-    desktop_max_cols = sys_system(SYSTEM_CMD_GET_DESKTOP_PROP, 4, 0, 0, 0);
-    mouse_speed = sys_system(SYSTEM_CMD_GET_MOUSE_SPEED, 0, 0, 0, 0);
-    
-    net_ipv4_address_t kip;
-    if (sys_network_get_ip(&kip) == 0) {
-        char bp[4];
-        net_ip[0] = 0;
-        for (int i=0; i<4; i++) {
-            cli_itoa(kip.bytes[i], bp);
-            strcat(net_ip, bp);
-            if (i < 3) strcat(net_ip, ".");
-        }
-    }
-
-    if (sys_get_dns_server(&kip) == 0) {
-        char bp[4];
-        net_dns[0] = 0;
-        for (int i=0; i<4; i++) {
-            cli_itoa(kip.bytes[i], bp);
-            strcat(net_dns, bp);
-            if (i < 3) strcat(net_dns, ".");
-        }
-    }
-
-    init_dynamic_resolutions();
-    load_wallpapers();
-}
-
 static void control_panel_handle_mouse(int x, int y, bool is_down, bool is_click) {
-    int win_w = 350;
-    
     if (current_view != VIEW_MAIN && widget_button_handle_mouse(&btn_back, x, y, is_down, is_click, NULL)) {
         if (is_click) {
             current_view = VIEW_MAIN;
@@ -1218,7 +1242,12 @@ static void control_panel_handle_mouse(int x, int y, bool is_down, bool is_click
 
     if (current_view == VIEW_MAIN) {
         if (widget_button_handle_mouse(&btn_main_wallpaper, x, y, is_down, is_click, NULL)) {
-            if (is_click) { current_view = VIEW_WALLPAPER; focused_field = -1; btn_main_wallpaper.pressed = false; }
+            if (is_click) {
+                current_view = VIEW_WALLPAPER;
+                focused_field = -1;
+                btn_main_wallpaper.pressed = false;
+                load_wallpapers();
+            }
             return;
         }
         if (widget_button_handle_mouse(&btn_main_network, x, y, is_down, is_click, NULL)) {
@@ -1255,18 +1284,26 @@ static void control_panel_handle_mouse(int x, int y, bool is_down, bool is_click
     }
 
     if (current_view == VIEW_MOUSE) {
-        if (is_down || is_click) {
-            int offset_x = 8;
-            int offset_y = 6;
-            int section_y = offset_y + 65;
-            if (x >= offset_x + 60 && x <= offset_x + 260 && y >= section_y && y <= section_y + 20) {
-                int new_speed = 1 + (x - (offset_x + 60)) * 49 / 200;
-                if (new_speed < 1) new_speed = 1;
-                if (new_speed > 50) new_speed = 50;
+        if (widget_slider_handle_mouse(&slider_mouse, x, y, is_down, is_click, NULL)) {
+            int new_speed = (int)(slider_mouse.value);
+            focused_field = -1; // slider doesn't use textbox, so clear focus on click
+
+            if (new_speed != mouse_speed) {
                 mouse_speed = new_speed;
                 save_mouse_config();
-                return;
             }
+            return;
+        }
+
+        if (widget_slider_handle_mouse(&slider_cursor_size, x, y, is_down, is_click, NULL)) {
+            int new_scale = (int)(slider_cursor_size.value);
+            focused_field = -1;
+
+            if (new_scale != mouse_cursor_scale_tenths) {
+                mouse_cursor_scale_tenths = new_scale;
+                save_mouse_config();
+            }
+            return;
         }
     }
     
@@ -1385,6 +1422,12 @@ static void init_settings_widgets(void) {
     // Display View Textboxes
     widget_textbox_init(&tb_custom_w, 8, 276, 60, 25, custom_res_w, 5);
     widget_textbox_init(&tb_custom_h, 88, 276, 60, 25, custom_res_h, 5);
+
+    widget_slider_init(&slider_mouse, 68, 71, 200, 20, 1.0f, 50.0f, (float)mouse_speed);
+    slider_mouse.step = 1.0f;
+
+    widget_slider_init(&slider_cursor_size, 68, 111, 200, 20, 10.0f, 40.0f, (float)mouse_cursor_scale_tenths);
+    slider_cursor_size.step = 1.0f;
 }
 
 int main(int argc, char **argv) {
@@ -1404,6 +1447,9 @@ int main(int argc, char **argv) {
     desktop_max_rows_per_col = sys_system(SYSTEM_CMD_GET_DESKTOP_PROP, 3, 0, 0, 0);
     desktop_max_cols        = sys_system(SYSTEM_CMD_GET_DESKTOP_PROP, 4, 0, 0, 0);
     mouse_speed             = sys_system(SYSTEM_CMD_GET_MOUSE_SPEED, 0, 0, 0, 0);
+    mouse_cursor_scale_tenths = sys_system(SYSTEM_CMD_GET_MOUSE_CURSOR_SCALE, 0, 0, 0, 0);
+    if (mouse_cursor_scale_tenths < 10) mouse_cursor_scale_tenths = 10;
+    if (mouse_cursor_scale_tenths > 40) mouse_cursor_scale_tenths = 40;
     load_settings_icons();
 
     // Set initial widget states
@@ -1418,8 +1464,6 @@ int main(int argc, char **argv) {
     control_panel_paint(win);
     ui_mark_dirty(win, 0, 0, 350, 500);
 
-    load_wallpapers(); // load after first paint to avoid startup delay
-
     gui_event_t ev;
     while (1) {
         bool dirty = false;
@@ -1429,12 +1473,11 @@ int main(int argc, char **argv) {
                 dirty = true;
 
             } else if (ev.type == GUI_EVENT_CLICK ||
-                       ev.type == GUI_EVENT_MOUSE_DOWN ||
                        ev.type == GUI_EVENT_MOUSE_MOVE ||
                        ev.type == GUI_EVENT_MOUSE_UP) {
                 bool down = false;
 
-                if (ev.type == GUI_EVENT_MOUSE_DOWN || ev.type == GUI_EVENT_CLICK) {
+                if (ev.type == GUI_EVENT_CLICK) {
                     down = true;
                 } else if (ev.type == GUI_EVENT_MOUSE_MOVE) {
                     down = (ev.arg3 & 1);
@@ -1442,13 +1485,15 @@ int main(int argc, char **argv) {
                     down = false;
                 }
 
-                control_panel_handle_mouse(
-                    ev.arg1,
-                    ev.arg2,
-                    down,
-                    ev.type == GUI_EVENT_CLICK
-                );
-                dirty = true;
+                if (ev.type != GUI_EVENT_MOUSE_MOVE || down) {
+                    control_panel_handle_mouse(
+                        ev.arg1,
+                        ev.arg2,
+                        down,
+                        ev.type == GUI_EVENT_CLICK
+                    );
+                    dirty = true;
+                }
 
             } else if (ev.type == GUI_EVENT_MOUSE_WHEEL) {
                 if (current_view == VIEW_FONTS) {
@@ -1482,10 +1527,14 @@ int main(int argc, char **argv) {
                 ui_mark_dirty(win, 0, 0, 350, 500);
             }
         } else {
-            sleep(10);
+            if (current_view == VIEW_WALLPAPER && load_next_wallpaper_thumb()) {
+                control_panel_paint(win);
+                ui_mark_dirty(win, 0, 0, 350, 500);
+            } else {
+                sleep(10);
+            }
         }
     }
 
     return 0;
 }
-

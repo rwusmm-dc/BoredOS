@@ -1476,6 +1476,11 @@ static uint64_t sys_cmd_set_mouse_speed(const syscall_args_t *args) {
     return 0;
 }
 
+static uint64_t sys_cmd_set_mouse_cursor_scale(const syscall_args_t *args) {
+    wm_set_cursor_scale_tenths((int)args->arg2);
+    return 0;
+}
+
 static uint64_t sys_cmd_network_init(const syscall_args_t *args) {
     (void)args;
     extern int network_init(void);
@@ -1499,6 +1504,11 @@ static uint64_t sys_cmd_get_mouse_speed(const syscall_args_t *args) {
     (void)args;
     extern int mouse_speed;
     return mouse_speed;
+}
+
+static uint64_t sys_cmd_get_mouse_cursor_scale(const syscall_args_t *args) {
+    (void)args;
+    return (uint64_t)wm_get_cursor_scale_tenths();
 }
 
 static uint64_t sys_cmd_get_wallpaper_thumb(const syscall_args_t *args) {
@@ -2415,6 +2425,8 @@ static const syscall_handler_fn sys_cmd_table[SYS_CMD_TABLE_SIZE] = {
     [SYSTEM_CMD_PARALLEL_RUN]        = sys_cmd_parallel_run,
     [SYSTEM_CMD_SET_KEYBOARD_LAYOUT] = sys_cmd_set_keyboard_layout,
     [SYSTEM_CMD_GET_KEYBOARD_LAYOUT] = sys_cmd_get_keyboard_layout,
+    [SYSTEM_CMD_SET_MOUSE_CURSOR_SCALE] = sys_cmd_set_mouse_cursor_scale,
+    [SYSTEM_CMD_GET_MOUSE_CURSOR_SCALE] = sys_cmd_get_mouse_cursor_scale,
     [SYSTEM_CMD_TTY_CREATE]          = sys_cmd_tty_create,
     [SYSTEM_CMD_TTY_READ_OUT]        = sys_cmd_tty_read_out,
     [SYSTEM_CMD_TTY_WRITE_IN]        = sys_cmd_tty_write_in,
