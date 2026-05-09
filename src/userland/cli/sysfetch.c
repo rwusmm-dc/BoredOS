@@ -7,7 +7,7 @@
 
 #define MAX_ASCII_LINES 32
 #define MAX_ASCII_WIDTH 80
-#define MAX_INFO_LINES 10
+#define MAX_INFO_LINES 15
 
 static char* strncpy(char *dest, const char *src, size_t n) {
     size_t i;
@@ -25,6 +25,8 @@ typedef struct {
     char uptime_label[32];
     char shell_label[32];
     char memory_label[32];
+    char cpu_label[32];
+    char date_label[32];
 } SysfetchConfig;
 
 static SysfetchConfig config;
@@ -129,6 +131,8 @@ static void set_config_defaults() {
     strcpy(config.uptime_label, "Uptime");
     strcpy(config.shell_label, "Shell");
     strcpy(config.memory_label, "Memory");
+    strcpy(config.cpu_label, "CPU");
+    strcpy(config.date_label, "Date");
 }
 
 static void parse_config(char* buffer) {
@@ -154,6 +158,8 @@ static void parse_config(char* buffer) {
                 else if (strcmp(key, "uptime_label") == 0) strcpy(config.uptime_label, val);
                 else if (strcmp(key, "shell_label") == 0) strcpy(config.shell_label, val);
                 else if (strcmp(key, "memory_label") == 0) strcpy(config.memory_label, val);
+                else if (strcmp(key, "cpu_label") == 0) strcpy(config.cpu_label, val);
+                else if (strcmp(key, "date_label") == 0) strcpy(config.date_label, val);
             }
         }
 
@@ -257,12 +263,28 @@ int main(int argc, char **argv) {
     auto int find_v(const char *b, const char *k) {
         char *p = (char*)b; int kl = strlen(k);
         while (*p) {
-            if (memcmp(p, k, kl) == 0 && p[kl] == ':') {
-                p += kl + 1; while (*p == ' ') p++; return atoi(p);
+            if (memcmp(p, k, kl) == 0 && (p[kl] == ':' || p[kl] == '\t')) {
+                p += kl; while (*p == ':' || *p == '\t' || *p == ' ') p++;
+                return atoi(p);
             }
             while (*p && *p != '\n') p++; if (*p == '\n') p++;
         }
         return 0;
+    }
+
+    auto void find_s(const char *b, const char *k, char *out) {
+        char *p = (char*)b; int kl = strlen(k);
+        while (*p) {
+            if (memcmp(p, k, kl) == 0 && (p[kl] == ':' || p[kl] == '\t')) {
+                p += kl; while (*p == ':' || *p == '\t' || *p == ' ') p++;
+                int i = 0;
+                while (*p && *p != '\n' && i < 127) out[i++] = *p++;
+                out[i] = 0;
+                return;
+            }
+            while (*p && *p != '\n') p++; if (*p == '\n') p++;
+        }
+        strcpy(out, "Unknown");
     }
 
     int fd_v = sys_open("/proc/version", "r");
@@ -310,6 +332,30 @@ int main(int argc, char **argv) {
             strcat(info_lines[info_line_count++], " mins");
         }
     }
+    if (config.cpu_label[0]) {
+        int fd_c = sys_open("/proc/cpuinfo", "r");
+        if (fd_c >= 0) {
+            char c_buf[2048];
+            int b = sys_read(fd_c, c_buf, 2047);
+            c_buf[b] = 0;
+            sys_close(fd_c);
+            
+            char model[128];
+            find_s(c_buf, "model name", model);
+            int cores = find_v(c_buf, "cpu cores");
+            
+            strcpy(info_lines[info_line_count], config.cpu_label);
+            strcat(info_lines[info_line_count], ": ");
+            strcat(info_lines[info_line_count], model);
+            if (cores > 0) {
+                strcat(info_lines[info_line_count], " (");
+                itoa(cores, temp_buf);
+                strcat(info_lines[info_line_count], temp_buf);
+                strcat(info_lines[info_line_count], ")");
+            }
+            info_line_count++;
+        }
+    }
     if (config.shell_label[0]) {
         strcpy(info_lines[info_line_count], config.shell_label);
         strcat(info_lines[info_line_count++], ": bsh");
@@ -331,6 +377,22 @@ int main(int argc, char **argv) {
             itoa(total / 1024, temp_buf);
             strcat(info_lines[info_line_count], temp_buf);
             strcat(info_lines[info_line_count++], "MiB");
+        }
+    }
+    if (config.date_label[0]) {
+        int fd_d = sys_open("/proc/datetime", "r");
+        if (fd_d >= 0) {
+            char d_buf[64];
+            int b = sys_read(fd_d, d_buf, 63);
+            d_buf[b] = 0;
+            sys_close(fd_d);
+            
+            strcpy(info_lines[info_line_count], config.date_label);
+            strcat(info_lines[info_line_count], ": ");
+            strcat(info_lines[info_line_count], d_buf);
+            char *nl = strchr(info_lines[info_line_count], '\n');
+            if (nl) *nl = 0;
+            info_line_count++;
         }
     }
 

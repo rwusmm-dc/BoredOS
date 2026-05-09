@@ -307,6 +307,7 @@ $(BUILD_DIR)/initrd.tar: $(KERNEL_ELF)
 	@if [ -f $(SRC_DIR)/library/bsh/bshrc ]; then printf "  -> bshrc"; cp $(SRC_DIR)/library/bsh/bshrc $(BUILD_DIR)/initrd/Library/bsh/; fi
 	@if [ -f $(SRC_DIR)/library/bsh/startup.bsh ]; then printf "  -> startup.bsh"; cp $(SRC_DIR)/library/bsh/startup.bsh $(BUILD_DIR)/initrd/Library/bsh/; fi
 	@if [ -f $(SRC_DIR)/library/bsh/boot.bsh ]; then printf "  -> boot.bsh"; cp $(SRC_DIR)/library/bsh/boot.bsh $(BUILD_DIR)/initrd/Library/bsh/; fi
+	@if [ -f $(SRC_DIR)/library/conf/sysfetch.cfg ]; then printf "  -> sysfetch.cfg"; cp $(SRC_DIR)/library/conf/sysfetch.cfg $(BUILD_DIR)/initrd/Library/conf/; fi
 
 	@printf "$(YELLOW)[COPY]$(RESET) DOOM assets..."
 	@if [ -f $(SRC_DIR)/userland/games/doom/doom1.wad ]; then printf "  -> doom1.wad"; cp $(SRC_DIR)/userland/games/doom/doom1.wad $(BUILD_DIR)/initrd/Library/DOOM/; fi
