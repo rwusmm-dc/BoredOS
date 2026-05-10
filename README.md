@@ -81,6 +81,13 @@
       <img src="https://github.com/Lluciocc.png?size=80" width="60" /><br />
       <sub><b>Lluciocc</b></sub>
     </a><br />
+    Maintainer
+  </td>
+  <td align="center">
+    <a href="https://github.com/Mellurboo">
+      <img src="https://github.com/Mellurboo.png?size=80" width="60" /><br />
+      <sub><b>Mellurboo</b></sub>
+    </a><br />
     Contributor
   </td>
   <td align="center">
