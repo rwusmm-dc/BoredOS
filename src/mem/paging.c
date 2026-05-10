@@ -6,6 +6,8 @@
 #include "platform.h"
 #include <stddef.h>
 
+#define MSR_WC  0x277
+
 static uint64_t current_pml4_phys = 0;
 
 // Get current CR3 value
@@ -37,7 +39,6 @@ static uint64_t alloc_page_table_phys(void) {
 }
 
 void paging_init(void) {
-
     current_pml4_phys = read_cr3() & PT_ADDR_MASK;
 }
 
