@@ -11,7 +11,7 @@
 
 // SLAB_CLASSES and SLAB_MAX_SIZE must stay in sync with the slab_sizes[] table in memory_manager.c.
 #define DEFAULT_POOL_SIZE           (128 * 1024 * 1024)
-#define BLOCK_LIST_INITIAL_CAPACITY 64
+#define BLOCK_LIST_INITIAL_CAPACITY 1024
 #define SLAB_CLASSES  7
 #define SLAB_MAX_SIZE 512
 
@@ -44,6 +44,7 @@ typedef struct {
 void memory_manager_init_from_memmap(struct limine_memmap_response *memmap);
 
 void* kmalloc(size_t size);
+void* kcalloc(size_t n, size_t size);
 // alignment must be a power of 2. Requests <= 512 B with alignment <= 8 are served by the slab allocator.
 void* kmalloc_aligned(size_t size, size_t alignment);
 void kfree(void *ptr);

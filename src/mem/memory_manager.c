@@ -44,6 +44,7 @@ static MemBlock  *block_list     = _bootstrap_blocks;
 static int        block_capacity = BLOCK_LIST_INITIAL_CAPACITY;
 static int        block_count    = 0;
 static bool       on_heap        = false;
+static bool       growing        = false;
 
 static size_t    memory_pool_size   = 0;
 static size_t    total_allocated    = 0;
@@ -90,8 +91,12 @@ static uint32_t get_timestamp(void) {
 }
 
 static bool insert_block_at(int idx, void *addr, size_t size, bool allocated, uint32_t id) {
-    if (block_count >= block_capacity && !grow_block_list())
-        return false;
+    // Proactive growth: If we're within 10 slots of full, grow the list now.
+    // This ensures we always have metadata space to split blocks even during a nested kmalloc.
+    if (block_count >= block_capacity - 10 && !growing) {
+        grow_block_list();
+    }
+    if (block_count >= block_capacity) return false;
     for (int j = block_count; j > idx; j--)
         block_list[j] = block_list[j - 1];
     block_list[idx] = (MemBlock){
@@ -192,7 +197,6 @@ static void _kfree_locked(void *ptr) {
 // _kmalloc_locked can call grow_block_list again if the block list fills
 // during the allocation of the new array, causing infinite recursion without this flag.
 static bool grow_block_list(void) {
-    static bool growing = false;
     if (growing) return false;
     growing = true;
 
@@ -200,12 +204,17 @@ static bool grow_block_list(void) {
     MemBlock *nl = (MemBlock *)_kmalloc_locked((size_t)new_cap * sizeof(MemBlock), 8);
     if (!nl) { growing = false; return false; }
 
-    if (on_heap) _kfree_locked(block_list);
     mem_memcpy(nl, block_list, (size_t)block_count * sizeof(MemBlock));
+    
+    MemBlock *old_ptr = block_list;
+    bool old_on_heap  = on_heap;
+
     block_list     = nl;
     block_capacity = new_cap;
     on_heap        = true;
     growing        = false;
+
+    if (old_on_heap) _kfree_locked(old_ptr);
     return true;
 }
 
@@ -350,8 +359,20 @@ static void *slab_alloc(int cls) {
         serial_write(" page="); k_itoa_hex((uint64_t)page, b); serial_write(b);
         serial_write(" fl=");   k_itoa_hex((uint64_t)obj, b);  serial_write(b);
         serial_write("\n");
+
+        // Remove the corrupted page from the list to avoid hitting it again
+        if (cache->pages == page) {
+            cache->pages = page->next;
+        } else {
+            SlabPage *prev = cache->pages;
+            while (prev && prev->next != page) prev = prev->next;
+            if (prev) prev->next = page->next;
+        }
+
         page->free_count = 0;
         page->freelist   = NULL;
+        page->next       = NULL; // Isolate it
+
         page = slab_new_page(cls);
         if (!page) return NULL;
         page->next   = cache->pages;
@@ -450,6 +471,15 @@ void *kmalloc_aligned(size_t size, size_t alignment) {
 
 void *kmalloc(size_t size) {
     return kmalloc_aligned(size, 8);
+}
+
+// kcalloc ensures memory is zeroed, which is critical for many kernel and library 
+// structures (like lwIP PCBs) that assume a null-initialized state.
+void *kcalloc(size_t n, size_t size) {
+    size_t total = n * size;
+    void *ptr = kmalloc(total);
+    if (ptr) mem_memset(ptr, 0, total);
+    return ptr;
 }
 
 void kfree(void *ptr) {

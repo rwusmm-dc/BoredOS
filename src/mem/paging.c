@@ -135,9 +135,6 @@ void paging_destroy_user_pml4_phys(uint64_t pml4_phys) {
                             
                             for (int pt_idx = 0; pt_idx < 512; pt_idx++) {
                                 if (pt->entries[pt_idx] & PT_PRESENT) {
-                                    uint64_t phys_addr = pt->entries[pt_idx] & PT_ADDR_MASK;
-                                    extern void kfree(void* ptr);
-                                    kfree((void*)p2v(phys_addr));
                                 }
                             }
                             extern void kfree(void* ptr);
