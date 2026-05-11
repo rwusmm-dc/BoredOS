@@ -31,7 +31,7 @@ int driver_register(usb_driver_t *driver);
 int driver_unregister(usb_driver_t *driver);
 int driver_load_for_device(usb_device_t *dev);
 void driver_unload_for_device(usb_device_t *dev);
-void driver_hotplug_poll(void);
-void driver_poll_all(void);
+void driver_check_hotplug(void);
+void driver_poll_active_instances(void);
 
 #endif

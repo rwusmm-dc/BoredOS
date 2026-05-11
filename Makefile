@@ -84,16 +84,11 @@ LIMINE_URL_BASE = https://github.com/limine-bootloader/limine/raw/v$(LIMINE_VERS
 
 HOST_OS := $(shell uname -s 2>/dev/null || echo Windows)
 
-.PHONY: all clean run run-hd limine-setup run-windows run-mac run-linux run-hd-mac run-hd-windows run-hd-linux unsafe
+.PHONY: all clean run run-hd limine-setup run-windows run-mac run-linux run-hd-mac run-hd-windows run-hd-linux
 
 all:
 	$(call PRINT_STEP,STARTING BOREDOS BUILD)
 	$(MAKE) $(ISO_IMAGE)
-	$(call PRINT_STEP,BUILD COMPLETE)
-
-unsafe:
-	$(call PRINT_STEP,STARTING BOREDOS BUILD (UNSAFE MODE))
-	$(MAKE) $(ISO_IMAGE) LD=ld AR=ar CC=gcc TCC_CC=gcc TCC_AR=ar
 	$(call PRINT_STEP,BUILD COMPLETE)
 
 $(BUILD_DIR):

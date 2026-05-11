@@ -8,6 +8,8 @@ run.ps1
 edk2-vars.fd
 qemu-debug.log
 boredos.dump
+Makefile.unsafe 
+# makefile.unsafe isn't supposed to be committed
 
 # Userland
 src/userland/bin/
